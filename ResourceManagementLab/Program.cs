@@ -1,16 +1,29 @@
-﻿// ОТВЕТЫ НА ВОПРОСЫ:
-// 1. Стек: локальные переменные, вызовы методов (быстро, LIFO). Куча: объекты, управляется GC.
-// 2. Достижимость: возможность добраться до объекта от корней GC (переменные стека, статические поля).
-// 3. Поколения GC: оптимизация. Gen 0 проверяется часто (мусора много), Gen 2 — редко (мусора мало).
-// 4. GC не закрывает файл сразу, так как управляет только памятью, а не внешними ресурсами ОС.
-// 5. IDisposable: интерфейс для детерминированного (явного) освобождения ресурсов через Dispose().
-// 6. using: синтаксический сахар для try/finally, гарантирующий вызов Dispose() при любом выходе.
-// 7. Dispose вызывается при исключении, потому что using разворачивается в блок finally.
-// 8. Dispose вызывается вручную (детерминированно), финализатор — автоматически GC (недетерминированно).
-// 9. IAsyncDisposable: когда освобождение ресурса требует асинхронных операций (сеть, диск).
-// 10. GC.Collect() вручную: убивает производительность и не гарантирует очистку внешних ресурсов.
-// 11. Владение ресурсом: тот, кто создал или получил ресурс, обязан его освободить.
-// 12. leaveOpen: запрещает StreamReader закрывать переданный ему поток, так как поток принадлежит другому владельцу.
+﻿// ОТВЕТЫ НА ВОПРОСЫ П2:
+// 1. Использование после Dispose: объект должен выбрасывать ObjectDisposedException.
+// 2. Повторный Dispose: должен быть идемпотентным (ничего не делать и не вызывать ошибок).
+// 3. leaveOpen: указывает StreamReader НЕ закрывать переданный поток, так как владелец потока — другой объект.
+// 4. IAsyncDisposable: используется для асинхронного освобождения ресурсов (DisposeAsync), чтобы не блокировать поток выполнения.
+
+// П2: Задания 9
+/*
+ * Анализ необходимости реализации IDisposable:
+ * 
+ * 1. Player (string Name, int Score): Нет.
+ *    Объяснение: содержит только управляемые типы. GC автоматически очистит память.
+ * 
+ * 2. FileStorage (владеет FileStream): Да.
+ *    Объяснение: владеет неуправляемым ресурсом (дескриптор файла ОС), который требует явного и своевременного освобождения.
+ * 
+ * 3. Report (List<string>): Обычно нет.
+ *    Объяснение: List управляется GC. Если бы внутри хранился Stream или другая неуправляемая сущность, тогда да.
+ * 
+ * 4. SocketManager (владеет Socket): Да.
+ *    Объяснение: Сокет — это неуправляемый сетевой ресурс, требующий явного закрытия соединения.
+ * 
+ * 5. Класс, принимающий чужой Stream и читающий его: Не обязательно.
+ *    Объяснение: Если класс не владеет потоком (использует leaveOpen: true), он не должен его закрывать. 
+ *    Ответственность за освобождение лежит на создателе (владельце) потока.
+ */
 
 using ResourceManagementLab.Services;
 
@@ -18,53 +31,65 @@ namespace ResourceManagementLab;
 
 internal class Program
 {
-    private static void Main()
+    private static async Task Main() // П2: изменено на async Task для Задания 10
     {
         string dataDirectory = Path.Combine(AppContext.BaseDirectory, "Data");
         Directory.CreateDirectory(dataDirectory);
         string filePath = Path.Combine(dataDirectory, "sample.txt");
         File.WriteAllText(filePath, "Hello from C#!\nResource management example.");
 
-        Console.WriteLine("=== RESOURCE MANAGEMENT LAB ===");
+        Console.WriteLine("=== П2: RESOURCE MANAGEMENT LAB ===");
         Console.WriteLine();
 
-        Console.WriteLine("1. Чтение без using (исправлено на using по заданию 1.4, чтобы не блокировать файл):");
-        string content1 = FileReaderWithoutUsing.ReadFile(filePath); // П1: начало изменений для Задания 1
-        Console.WriteLine(content1);
+        // П2: Начало изменений для Заданий 5, 6, 7 (FileStorage, защита от использования, повторный Dispose)
+        Console.WriteLine("1. Проверка FileStorage и повторного Dispose:");
+        var storage = new FileStorage(filePath);
+        storage.Write("Hello from FileStorage");
+        Console.WriteLine(storage.Read());
 
-        Console.WriteLine();
-        Console.WriteLine("2. Чтение с using");
-        string content2 = FileReaderWithUsing.ReadFile(filePath);
-        Console.WriteLine(content2);
+        storage.Dispose();
+        Console.WriteLine("Первый Dispose выполнен.");
 
-        Console.WriteLine();
-        Console.WriteLine("3. Проверка поведения при исключении (Задание 2):"); // П1: начало изменений для Задания 2
+        storage.Dispose(); // Повторный вызов не должен вызывать ошибку
+        Console.WriteLine("Повторный Dispose выполнен без ошибок.");
+
         try
         {
-            FileReaderWithUsing.ReadFileWithError(filePath);
+            storage.Write("Тест после Dispose");
         }
-        catch (InvalidOperationException ex)
+        catch (ObjectDisposedException ex)
         {
-            Console.WriteLine($"Перехвачена ошибка: {ex.Message}");
+            Console.WriteLine($"Перехвачено ожидаемое исключение: {ex.GetType().Name}");
         }
 
         Console.WriteLine();
-        Console.WriteLine("4. Проверка Dispose");
-        using (var storage = new FileStorage(filePath))
+
+        // П2: Начало изменений для Задания 8 (Проверка владения ресурсом)
+        Console.WriteLine("2. Проверка владения ресурсом (leaveOpen: true):");
+        using var stream = new FileStream(filePath, FileMode.OpenOrCreate, FileAccess.ReadWrite);
+        stream.Write(System.Text.Encoding.UTF8.GetBytes("Владелец потока - Program"));
+        stream.Position = 0;
+
+        // П2 TODO: Передать stream другому компоненту и не допустить, чтобы он закрыл поток.
+        using var reader = new StreamReader(stream, leaveOpen: true); // П2 TODO
+        string content = reader.ReadToEnd();
+        Console.WriteLine($"Прочитано через внешний StreamReader: {content}");
+
+        // П2 TODO: Использовать переданный поток после закрытия компонента-пользователя.
+        stream.Position = 0; // П2 TODO
+        Console.WriteLine("Поток всё ещё открыт и доступен владельцу после закрытия StreamReader.");
+
+        Console.WriteLine();
+
+        // П2: Начало изменений для Задания 10 (Асинхронное освобождение)
+        Console.WriteLine("4. Проверка IAsyncDisposable:");
+        await using (var asyncStorage = new AsyncFileStorage(filePath)) // П2 TODO
         {
-            storage.Write("Данные записаны через FileStorage.");
-            Console.WriteLine(storage.Read());
+            await asyncStorage.WriteAsync("Асинхронная запись данных."); // П2 TODO
+            string asyncContent = await asyncStorage.ReadAsync(); // П2 TODO
+            Console.WriteLine($"Асинхронно прочитано: {asyncContent}");
         }
-
-        Console.WriteLine();
-        Console.WriteLine("5. Проверка повторного Dispose");
-        var secondStorage = new FileStorage(filePath);
-        secondStorage.Dispose();
-        secondStorage.Dispose();
-
-        Console.WriteLine();
-        Console.WriteLine("6. Демонстрация GC (Задание 4):"); // П1: начало изменений для Задания 4
-        MemoryDemo.Run();
+        // DisposeAsync вызывается автоматически здесь
 
         Console.WriteLine();
         Console.WriteLine("Работа программы завершена.");
